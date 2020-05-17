@@ -10,11 +10,13 @@ using System.Threading.Tasks;
 
 namespace DynamicIL
 {
-    public interface IFly : IRun
+    public interface IFly
     {
+        int a { get; set; }
+
         int Fly(string arg);
 
-        int Fly<T>(T a);
+        int Fly<T>(T a) where T : struct;
     }
     
     public interface IRun
@@ -22,7 +24,7 @@ namespace DynamicIL
         void Run();
     }
 
-    public class Bird : IFly
+    public class Bird : IFly, IRun
     {
         public int a { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
 
@@ -32,7 +34,7 @@ namespace DynamicIL
             return 5;
         }
 
-        public int Fly<T>(T a)
+        public int Fly<T>(T a) where T : struct
         {
             //Console.WriteLine("泛型起飞 {0}", a);
             return 6;
@@ -40,7 +42,7 @@ namespace DynamicIL
 
         public void Run()
         {
-            throw new NotImplementedException();
+            Console.WriteLine("跑步");
         }
     }
 
@@ -55,28 +57,32 @@ namespace DynamicIL
         }
     }
 
-    /// <summary>
-    /// 基于接口的代理
-    /// </summary>
-    //public class BirdProxy : BirdDynamicProxy, IFly
-    //{
-    //    private readonly Bird _bird;
+    public class BirdProxy : BirdDynamicProxy, IFly
+    {
+        private readonly Bird _bird;
 
-    //    public BirdProxy(Bird bird)
-    //    {
-    //        _bird = bird;
-    //    }
+        public BirdProxy(Bird bird)
+        {
+            _bird = bird;
+        }
 
-    //    public int Fly<T>(T a)
-    //    {
-    //        return default;
-    //    }
+        public int a { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
 
-    //    public int Fly(string arg)
-    //    {
-    //        return default;
-    //    }
-    //}
+        public int Fly<T>(T a) where T : struct
+        {
+            return default;
+        }
+
+        public int Fly(string arg)
+        {
+            return _bird.Fly(arg);
+        }
+
+        public void Run()
+        {
+            throw new NotImplementedException();
+        }
+    }
 
 
 
@@ -84,12 +90,21 @@ namespace DynamicIL
     {
         static void Main(string[] args)
         {
-            var a = typeof(IFly).GetTypeInfo().DeclaredMethods;
             var utils = new DynamicProxyTypeUtils();
-            utils.CreateInterfaceProxyType(typeof(IFly), typeof(Bird));
-            var type = utils.CreateInterfaceProxyType<IFly, BirdDynamicProxy>();
+            var type = utils.CreateInterfaceProxyType(typeof(IFly), typeof(Bird));
             var fly = (IFly)Activator.CreateInstance(type, new object[] { new Bird() });
-            fly.Run();
+            var amethods = typeof(IFly).GetMethods();
+            var properties = typeof(IFly).GetTypeInfo().DeclaredProperties;
+            var bmethods = type.GetTypeInfo().DeclaredMethods.ToArray();
+
+            var c = amethods[1].ToString().Equals(bmethods[1].ToString());
+            var a = fly.Fly(5);
+            var run = (IRun)fly;
+            run.Run();
+            //fly.Run();
+            //var type = utils.CreateInterfaceProxyType<IFly, BirdDynamicProxy>();
+            //var fly = (IFly)Activator.CreateInstance(type, new object[] { new Bird() });
+            //fly.Run();
             //var stopwatch = Stopwatch.StartNew();
             //for (int i = 0; i < 1000000; i++)
             //{

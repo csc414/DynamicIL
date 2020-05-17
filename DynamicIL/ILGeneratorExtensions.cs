@@ -78,6 +78,15 @@ namespace DynamicIL
         }
 
         /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="il"></param>
+        public static void Ret(this ILGenerator il)
+        {
+            il.Emit(OpCodes.Ret);
+        }
+
+        /// <summary>
         /// 创建一个固定长度的数组, 将数组引用push到计算栈
         /// </summary>
         /// <param name="il"></param>

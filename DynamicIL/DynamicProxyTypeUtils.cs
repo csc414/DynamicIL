@@ -63,32 +63,41 @@ namespace DynamicIL
 
             foreach (var method in interfaceType.GetTypeInfo().DeclaredMethods)
             {
-                DefineMethod(method, InterfaceMethodAttributes);
+                DefineMethod(method, method.Name, InterfaceMethodAttributes);
             }
-            //foreach (var item in additionalInterfaces)
-            //{
-            //    foreach (var method in item.GetTypeInfo().DeclaredMethods.Where(x => !x.IsPropertyBinding()))
-            //    {
-            //        DefineExplicitMethod(method, targetType, typeDesc);
-            //    }
-            //}
+            foreach (var additionalInterface in additionalInterfaces)
+            {
+                foreach (var method in additionalInterface.GetTypeInfo().DeclaredMethods)
+                {
+                    DefineMethod(method, $"{additionalInterface.Name}.{method.Name}", ExplicitMethodAttributes);
+                }
+            }
 
-            void DefineMethod(MethodInfo method, MethodAttributes attributes)
+            return typeBuilder.CreateType();
+
+            void DefineMethod(MethodInfo method, string name, MethodAttributes attributes)
             {
                 var parameters = method.GetParameters();
 
-                var methodBuilder = typeBuilder.DefineMethod(method.Name, attributes, method.CallingConvention, method.ReturnType, parameters.Select(parame => parame.ParameterType).ToArray());
+                var methodBuilder = typeBuilder.DefineMethod(name, attributes, method.CallingConvention, method.ReturnType, parameters.Select(parame => parame.ParameterType).ToArray());
 
                 GenericParameterUtils.DefineGenericParameter(method, methodBuilder);
 
-                foreach (var customAttributeData in method.CustomAttributes)
-                {
-                    methodBuilder.SetCustomAttribute(CustomAttributeBuildeUtils.DefineCustomAttribute(customAttributeData));
-                }
-
-
-
                 typeBuilder.DefineMethodOverride(methodBuilder, method);
+
+                EmitMethodBody();
+
+                void EmitMethodBody()
+                {
+                    var il = methodBuilder.GetILGenerator();
+                    il.PushField(_instance);
+                    for (int i = 1; i <= parameters.Length; i++)
+                    {
+                        il.PushArg(i);
+                    }
+                    il.Emit(OpCodes.Callvirt, method);
+                    il.Ret();
+                }
             }
 
             void DefineInterfaceProxyConstructor()
@@ -105,8 +114,6 @@ namespace DynamicIL
 
                 il.Emit(OpCodes.Ret);
             }
-
-            return default;
         }
 
         public Type CreateInterfaceProxyType<TInterface, TDynamicProxy>() where TDynamicProxy : DynamicProxy
@@ -177,253 +184,6 @@ namespace DynamicIL
                 methodIL.Emit(OpCodes.Ret);
             }
             return typeBuilder.CreateType();
-        }
-
-        private class ParameterBuilderUtils
-        {
-            public static void DefineParameters(MethodInfo targetMethod, MethodBuilder methodBuilder)
-            {
-                var parameters = targetMethod.GetParameters();
-                if (parameters.Length > 0)
-                {
-                    const int paramOffset = 1; // 1
-                    foreach (var parameter in parameters)
-                    {
-                        var parameterBuilder = methodBuilder.DefineParameter(parameter.Position + paramOffset, parameter.Attributes, parameter.Name);
-                        // if (parameter.HasDefaultValue) // parameter.HasDefaultValue will throw a FormatException when parameter is DateTime type with default value
-                        if (parameter.HasDefaultValueByAttributes())
-                        {
-                            // if (!(parameter.ParameterType.GetTypeInfo().IsValueType && parameter.DefaultValue == null)) 
-                            // we can comment above line safely, and CopyDefaultValueConstant will handle this case.
-                            // parameter.DefaultValue will throw a FormatException when parameter is DateTime type with default value
-                            {
-                                // parameterBuilder.SetConstant(parameter.DefaultValue);
-                                try
-                                {
-                                    CopyDefaultValueConstant(from: parameter, to: parameterBuilder);
-                                }
-                                catch
-                                {
-                                    // Default value replication is a nice-to-have feature but not essential,
-                                    // so if it goes wrong for one parameter, just continue.
-                                }
-                            }
-                        }
-                        foreach (var attribute in parameter.CustomAttributes)
-                        {
-                            parameterBuilder.SetCustomAttribute(CustomAttributeBuildeUtils.DefineCustomAttribute(attribute));
-                        }
-                    }
-                }
-
-                var returnParamter = targetMethod.ReturnParameter;
-                var returnParameterBuilder = methodBuilder.DefineParameter(0, returnParamter.Attributes, returnParamter.Name);
-                foreach (var attribute in returnParamter.CustomAttributes)
-                {
-                    returnParameterBuilder.SetCustomAttribute(CustomAttributeBuildeUtils.DefineCustomAttribute(attribute));
-                }
-            }
-
-            // Code from https://github.com/castleproject/Core/blob/master/src/Castle.Core/DynamicProxy/Generators/Emitters/MethodEmitter.cs
-            private static void CopyDefaultValueConstant(ParameterInfo from, ParameterBuilder to)
-            {
-                object defaultValue;
-                try
-                {
-                    defaultValue = from.DefaultValue;
-                }
-                catch (FormatException) when (from.ParameterType == typeof(DateTime))
-                {
-                    // This catch clause guards against a CLR bug that makes it impossible to query
-                    // the default value of an optional DateTime parameter. For the CoreCLR, see
-                    // https://github.com/dotnet/corefx/issues/26164.
-
-                    // If this bug is present, it is caused by a `null` default value:
-                    defaultValue = null;
-                }
-                catch (FormatException) when (from.ParameterType.GetTypeInfo().IsEnum)
-                {
-                    // This catch clause guards against a CLR bug that makes it impossible to query
-                    // the default value of a (closed generic) enum parameter. For the CoreCLR, see
-                    // https://github.com/dotnet/corefx/issues/29570.
-
-                    // If this bug is present, it is caused by a `null` default value:
-                    defaultValue = null;
-                }
-
-                if (defaultValue is Missing)
-                {
-                    // It is likely that we are reflecting over invalid metadata if we end up here.
-                    // At this point, `to.Attributes` will have the `HasDefault` flag set. If we do
-                    // not call `to.SetConstant`, that flag will be reset when creating the dynamic
-                    // type, so `to` will at least end up having valid metadata. It is quite likely
-                    // that the `Missing.Value` will still be reproduced because the `Parameter-
-                    // Builder`'s `ParameterAttributes.Optional` is likely set. (If it isn't set,
-                    // we'll be causing a default value of `DBNull.Value`, but there's nothing that
-                    // can be done about that, short of recreating a new `ParameterBuilder`.)
-                    return;
-                }
-
-                try
-                {
-                    to.SetConstant(defaultValue);
-                }
-                catch (ArgumentException)
-                {
-                    var parameterType = from.ParameterType;
-                    var parameterNonNullableType = parameterType;
-                    var isNullableType = parameterType.IsNullableType();
-
-                    if (defaultValue == null)
-                    {
-                        if (isNullableType)
-                        {
-                            // This guards against a Mono bug that prohibits setting default value `null`
-                            // for a `Nullable<T>` parameter. See https://github.com/mono/mono/issues/8504.
-                            //
-                            // If this bug is present, luckily we still get `null` as the default value if
-                            // we do nothing more (which is probably itself yet another bug, as the CLR
-                            // would "produce" a default value of `Missing.Value` in this situation).
-                            return;
-                        }
-                        else if (parameterType.GetTypeInfo().IsValueType)
-                        {
-                            // This guards against a CLR bug that prohibits replicating `null` default
-                            // values for non-nullable value types (which, despite the apparent type
-                            // mismatch, is perfectly legal and something that the Roslyn compilers do).
-                            // For the CoreCLR, see https://github.com/dotnet/corefx/issues/26184.
-
-                            // If this bug is present, the best we can do is to not set the default value.
-                            // This will cause a default value of `Missing.Value` (if `ParameterAttributes-
-                            // .Optional` is set) or `DBNull.Value` (otherwise, unlikely).
-                            return;
-                        }
-                    }
-                    else if (isNullableType)
-                    {
-                        parameterNonNullableType = from.ParameterType.GetGenericArguments()[0];
-                        if (parameterNonNullableType.GetTypeInfo().IsEnum || parameterNonNullableType.IsInstanceOfType(defaultValue))
-                        {
-                            // This guards against two bugs:
-                            //
-                            // * On the CLR and CoreCLR, a bug that makes it impossible to use `ParameterBuilder-
-                            //   .SetConstant` on parameters of a nullable enum type. For CoreCLR, see
-                            //   https://github.com/dotnet/coreclr/issues/17893.
-                            //
-                            //   If this bug is present, there is no way to faithfully reproduce the default
-                            //   value. This will most likely cause a default value of `Missing.Value` or
-                            //   `DBNull.Value`. (To better understand which of these, see comment above).
-                            //
-                            // * On Mono, a bug that performs a too-strict type check for nullable types. The
-                            //   value passed to `ParameterBuilder.SetConstant` must have a type matching that
-                            //   of the parameter precisely. See https://github.com/mono/mono/issues/8597.
-                            //
-                            //   If this bug is present, there's no way to reproduce the default value because
-                            //   we cannot actually create a value of type `Nullable<>`.
-                            return;
-                        }
-                    }
-
-                    // Finally, we might have got here because the metadata constant simply doesn't match
-                    // the parameter type exactly. Some code generators other than the .NET compilers
-                    // might produce such metadata. Make a final attempt to coerce it to the required type:
-                    try
-                    {
-                        var coercedDefaultValue = Convert.ChangeType(defaultValue, parameterNonNullableType, CultureInfo.InvariantCulture);
-                        to.SetConstant(coercedDefaultValue);
-
-                        return;
-                    }
-                    catch
-                    {
-                        // We don't care about the error thrown by an unsuccessful type coercion.
-                    }
-
-                    throw;
-                }
-            }
-
-            internal static void DefineParameters(ConstructorInfo constructor, ConstructorBuilder constructorBuilder)
-            {
-                constructorBuilder.DefineParameter(1, ParameterAttributes.None, "aspectContextFactory");
-                var parameters = constructor.GetParameters();
-                if (parameters.Length > 0)
-                {
-                    var paramOffset = 2;    //ParameterTypes.Length - parameters.Length + 1
-                    for (var i = 0; i < parameters.Length; i++)
-                    {
-                        var parameter = parameters[i];
-                        var parameterBuilder = constructorBuilder.DefineParameter(i + paramOffset, parameter.Attributes, parameter.Name);
-                        if (parameter.HasDefaultValue)
-                        {
-                            parameterBuilder.SetConstant(parameter.DefaultValue);
-                        }
-                        parameterBuilder.SetCustomAttribute(CustomAttributeBuildeUtils.DefineCustomAttribute(typeof(DynamicallyAttribute)));
-                        foreach (var attribute in parameter.CustomAttributes)
-                        {
-                            parameterBuilder.SetCustomAttribute(CustomAttributeBuildeUtils.DefineCustomAttribute(attribute));
-                        }
-                    }
-                }
-            }
-        }
-
-        private class CustomAttributeBuildeUtils
-        {
-            public static CustomAttributeBuilder DefineCustomAttribute(Type attributeType)
-            {
-                return new CustomAttributeBuilder(attributeType.GetTypeInfo().GetConstructor(Type.EmptyTypes), new object[0]);
-            }
-
-            public static CustomAttributeBuilder DefineCustomAttribute(CustomAttributeData customAttributeData)
-            {
-                if (customAttributeData.NamedArguments != null)
-                {
-                    var attributeTypeInfo = customAttributeData.AttributeType.GetTypeInfo();
-                    var constructor = customAttributeData.Constructor;
-                    //var constructorArgs = customAttributeData.ConstructorArguments.Select(c => c.Value).ToArray();
-                    var constructorArgs = customAttributeData.ConstructorArguments
-                        .Select(ReadAttributeValue)
-                        .ToArray();
-                    var namedProperties = customAttributeData.NamedArguments
-                            .Where(n => !n.IsField)
-                            .Select(n => attributeTypeInfo.GetProperty(n.MemberName))
-                            .ToArray();
-                    var propertyValues = customAttributeData.NamedArguments
-                             .Where(n => !n.IsField)
-                             .Select(n => ReadAttributeValue(n.TypedValue))
-                             .ToArray();
-                    var namedFields = customAttributeData.NamedArguments.Where(n => n.IsField)
-                             .Select(n => attributeTypeInfo.GetField(n.MemberName))
-                             .ToArray();
-                    var fieldValues = customAttributeData.NamedArguments.Where(n => n.IsField)
-                             .Select(n => ReadAttributeValue(n.TypedValue))
-                             .ToArray();
-                    return new CustomAttributeBuilder(customAttributeData.Constructor, constructorArgs
-                       , namedProperties
-                       , propertyValues, namedFields, fieldValues);
-                }
-                else
-                {
-                    return new CustomAttributeBuilder(customAttributeData.Constructor,
-                        customAttributeData.ConstructorArguments.Select(c => c.Value).ToArray());
-                }
-            }
-
-            private static object ReadAttributeValue(CustomAttributeTypedArgument argument)
-            {
-                var value = argument.Value;
-                if (argument.ArgumentType.GetTypeInfo().IsArray == false)
-                {
-                    return value;
-                }
-                //special case for handling arrays in attributes
-                //the actual type of "value" is ReadOnlyCollection<CustomAttributeTypedArgument>.
-                var arguments = ((IEnumerable<CustomAttributeTypedArgument>)value)
-                    .Select(m => m.Value)
-                    .ToArray();
-                return arguments;
-            }
         }
 
         private class GenericParameterUtils
