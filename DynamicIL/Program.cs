@@ -10,15 +10,22 @@ using System.Threading.Tasks;
 
 namespace DynamicIL
 {
-    public interface IFly
+    public interface IFly : IRun
     {
         int Fly(string arg);
 
         int Fly<T>(T a);
     }
+    
+    public interface IRun
+    {
+        void Run();
+    }
 
     public class Bird : IFly
     {
+        public int a { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+
         public int Fly(string arg)
         {
             //Console.WriteLine("起飞 {0}", arg);
@@ -29,6 +36,11 @@ namespace DynamicIL
         {
             //Console.WriteLine("泛型起飞 {0}", a);
             return 6;
+        }
+
+        public void Run()
+        {
+            throw new NotImplementedException();
         }
     }
 
@@ -46,25 +58,25 @@ namespace DynamicIL
     /// <summary>
     /// 基于接口的代理
     /// </summary>
-    public class BirdProxy : BirdDynamicProxy, IFly
-    {
-        private readonly Bird _bird;
+    //public class BirdProxy : BirdDynamicProxy, IFly
+    //{
+    //    private readonly Bird _bird;
 
-        public BirdProxy(Bird bird)
-        {
-            _bird = bird;
-        }
+    //    public BirdProxy(Bird bird)
+    //    {
+    //        _bird = bird;
+    //    }
 
-        public int Fly<T>(T a)
-        {
-            return default;
-        }
+    //    public int Fly<T>(T a)
+    //    {
+    //        return default;
+    //    }
 
-        public int Fly(string arg)
-        {
-            return default;
-        }
-    }
+    //    public int Fly(string arg)
+    //    {
+    //        return default;
+    //    }
+    //}
 
 
 
@@ -72,19 +84,20 @@ namespace DynamicIL
     {
         static void Main(string[] args)
         {
-            int[] aa = new int[5];
-            aa[1] = 5;
-
+            var a = typeof(IFly).GetTypeInfo().DeclaredMethods;
             var utils = new DynamicProxyTypeUtils();
+            utils.CreateInterfaceProxyType(typeof(IFly), typeof(Bird));
             var type = utils.CreateInterfaceProxyType<IFly, BirdDynamicProxy>();
-            var stopwatch = Stopwatch.StartNew();
-            for (int i = 0; i < 1000000; i++)
-            {
-                var fly = (IFly)Activator.CreateInstance(type, new object[] { new Bird() });
-                var a = fly.Fly("什么鬼");
-            }
-            stopwatch.Stop();
-            Console.WriteLine("耗时: {0}", stopwatch.ElapsedMilliseconds);
+            var fly = (IFly)Activator.CreateInstance(type, new object[] { new Bird() });
+            fly.Run();
+            //var stopwatch = Stopwatch.StartNew();
+            //for (int i = 0; i < 1000000; i++)
+            //{
+            //    var fly = (IFly)Activator.CreateInstance(type, new object[] { new Bird() });
+            //    var a = fly.Fly("什么鬼");
+            //}
+            //stopwatch.Stop();
+            //Console.WriteLine("耗时: {0}", stopwatch.ElapsedMilliseconds);
         }
     }
 }
