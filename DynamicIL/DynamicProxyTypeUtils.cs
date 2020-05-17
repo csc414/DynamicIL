@@ -69,31 +69,28 @@ namespace DynamicIL
                 }
                 var methodIL = methodBuilder.GetILGenerator();
                 var argsLocal = methodIL.DeclareLocal(typeof(object[]));
-                methodIL.EmitInt(parameterTypes.Length);
-                methodIL.Emit(OpCodes.Newarr, typeof(object));
+                methodIL.NewArray(typeof(object), parameterTypes.Length);
                 for (int i = 0; i < parameterTypes.Length; i++)
                 {
                     var parameterType = parameterTypes[i];
-                    methodIL.Emit(OpCodes.Dup);
-                    methodIL.EmitInt(i);
-                    methodIL.EmitLdarg(i + 1);
-                    if(!parameterType.IsByRef)
-                        methodIL.Emit(OpCodes.Box, parameterType);
+                    methodIL.CopyStackTop();
+                    methodIL.PushInt(i);
+                    methodIL.PushArg(i + 1);
+                    methodIL.BoxIfNeed(parameterType);
                     methodIL.Emit(OpCodes.Stelem_Ref);
                 }
-                methodIL.Emit(OpCodes.Stloc, argsLocal);
-                methodIL.Emit(OpCodes.Ldarg_0);
-                methodIL.Emit(OpCodes.Ldarg_0);
-                methodIL.Emit(OpCodes.Ldfld, proxyObj);
+                methodIL.StoreLocal(argsLocal);
+                methodIL.PushThis();
+                methodIL.PushField(proxyObj);
                 methodIL.Emit(OpCodes.Ldtoken, method);
                 methodIL.Emit(OpCodes.Call, GetMethodFromHandle);
                 methodIL.Emit(OpCodes.Castclass, typeof(MethodInfo));
-                methodIL.Emit(OpCodes.Ldloc, argsLocal);
+                methodIL.PushLocal(argsLocal);
                 methodIL.Emit(OpCodes.Callvirt, DynamicProxyInvoke);
                 if (isVoid)
-                    methodIL.Emit(OpCodes.Pop);
+                    methodIL.Pop();
                 else
-                    methodIL.Emit(OpCodes.Unbox_Any, method.ReturnType);
+                    methodIL.UnBoxAny(method.ReturnType);
                 methodIL.Emit(OpCodes.Ret);
             }
             return typeBuilder.CreateType();

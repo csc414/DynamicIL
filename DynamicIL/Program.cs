@@ -72,6 +72,9 @@ namespace DynamicIL
     {
         static void Main(string[] args)
         {
+            int[] aa = new int[5];
+            aa[1] = 5;
+
             var utils = new DynamicProxyTypeUtils();
             var type = utils.CreateInterfaceProxyType<IFly, BirdDynamicProxy>();
             var stopwatch = Stopwatch.StartNew();
