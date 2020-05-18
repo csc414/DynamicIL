@@ -25,79 +25,110 @@ namespace DynamicIL
             _builder = assemblyBuilder.DefineDynamicModule(assemblyName.Name);
         }
 
-        public IEnumerable<Type> GetInterfaces(Type type, params Type[] exceptInterfaces)
-        {
-            var hashSet = new HashSet<Type>(exceptInterfaces);
-            foreach (var interfaceType in type.GetTypeInfo().GetInterfaces().Distinct())
-            {
-                if (!interfaceType.GetTypeInfo().IsVisible())
-                {
-                    continue;
-                }
-                if (!hashSet.Contains(interfaceType))
-                {
-                    if (interfaceType.GetTypeInfo().ContainsGenericParameters && type.GetTypeInfo().ContainsGenericParameters)
-                    {
-                        if (!hashSet.Contains(interfaceType.GetGenericTypeDefinition()))
-                            yield return interfaceType;
-                    }
-                    else
-                    {
-                        yield return interfaceType;
-                    }
-                }
-            }
-        }
-
         public Type CreateInterfaceProxyType(Type interfaceType, Type implementType)
         {
-            var additionalInterfaces = GetInterfaces(implementType, interfaceType).ToArray();
-            var interfaces = new Type[] { interfaceType }.Concat(additionalInterfaces).Distinct().ToArray();
-            var typeBuilder = _builder.DefineType($"{ASSEMBLY_NAME}.{interfaceType.Name}Proxy", TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed, typeof(object), interfaces);
+            var additionalInterfaces = implementType.GetInterfaces(interfaceType).ToArray();
+            var interfaces = new [] { typeof(IProxyInstance), interfaceType }.Concat(additionalInterfaces).Distinct().ToArray();
+            var typeBuilder = _builder.DefineType($"{ASSEMBLY_NAME}.{interfaceType.Name}Proxy", TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed, typeof(object), interfaces.ToArray());
 
-            GenericParameterUtils.DefineGenericParameter(interfaceType, typeBuilder);
+            DefineGenericParameter(interfaceType, typeBuilder);
 
             var _instance = typeBuilder.DefineField("_instance", interfaceType, FieldAttributes.Private);
 
             DefineInterfaceProxyConstructor();
 
+            DefineProxyInstance();
+
+            var tokens = new HashSet<int>();
+            foreach (var property in interfaceType.GetTypeInfo().DeclaredProperties)
+            {
+                DefineProperty(property, property.Name, InterfaceMethodAttributes, tokens);
+            }
+            foreach (var additionalInterface in additionalInterfaces)
+            {
+                foreach (var property in additionalInterface.GetTypeInfo().DeclaredProperties)
+                {
+                    DefineProperty(property, $"{additionalInterface.Name}.{property.Name}", ExplicitMethodAttributes, tokens);
+                }
+            }
+
             foreach (var method in interfaceType.GetTypeInfo().DeclaredMethods)
             {
-                DefineMethod(method, method.Name, InterfaceMethodAttributes);
+                if (tokens.Contains(method.MetadataToken))
+                    continue;
+
+                DefineMethod(method, method.Name, InterfaceMethodAttributes, builder => EmitMethodBody(builder, method));
             }
             foreach (var additionalInterface in additionalInterfaces)
             {
                 foreach (var method in additionalInterface.GetTypeInfo().DeclaredMethods)
                 {
-                    DefineMethod(method, $"{additionalInterface.Name}.{method.Name}", ExplicitMethodAttributes);
+                    if (tokens.Contains(method.MetadataToken))
+                        continue;
+
+                    DefineMethod(method, $"{additionalInterface.Name}.{method.Name}", ExplicitMethodAttributes, builder => EmitMethodBody(builder, method));
                 }
             }
 
             return typeBuilder.CreateType();
 
-            void DefineMethod(MethodInfo method, string name, MethodAttributes attributes)
+            void DefineProxyInstance()
+            {
+                var method = typeof(IProxyInstance).GetTypeInfo().DeclaredMethods.First();
+                DefineMethod(method, method.Name, ExplicitMethodAttributes, builder => 
+                {
+                    var il = builder.GetILGenerator();
+                    il.PushField(_instance);
+                    il.Ret();
+                });
+            }
+
+            void DefineProperty(PropertyInfo propertyInfo, string name, MethodAttributes attributes, ICollection<int> tokens)
+            {
+                var propertyBuilder = typeBuilder.DefineProperty(name, propertyInfo.Attributes, propertyInfo.PropertyType, Type.EmptyTypes);
+
+                if (propertyInfo.CanRead)
+                {
+                    var method = propertyInfo.GetMethod;
+                    var getMethod = DefineMethod(method, method.Name, attributes, builder => EmitMethodBody(builder, method));
+                    propertyBuilder.SetGetMethod(getMethod);
+                    tokens.Add(method.MetadataToken);
+                }
+                if (propertyInfo.CanWrite)
+                {
+                    var method = propertyInfo.SetMethod;
+                    var setMethod = DefineMethod(method, method.Name, attributes, builder => EmitMethodBody(builder, method));
+                    propertyBuilder.SetGetMethod(setMethod);
+                    tokens.Add(method.MetadataToken);
+                }
+            }
+
+            MethodBuilder DefineMethod(MethodInfo method, string name, MethodAttributes attributes, Action<MethodBuilder> bodyBuilder)
             {
                 var parameters = method.GetParameters();
 
                 var methodBuilder = typeBuilder.DefineMethod(name, attributes, method.CallingConvention, method.ReturnType, parameters.Select(parame => parame.ParameterType).ToArray());
 
-                GenericParameterUtils.DefineGenericParameter(method, methodBuilder);
+                DefineGenericParameter(method, methodBuilder);
 
                 typeBuilder.DefineMethodOverride(methodBuilder, method);
 
-                EmitMethodBody();
+                bodyBuilder.Invoke(methodBuilder);
 
-                void EmitMethodBody()
+                return methodBuilder;
+            }
+
+            void EmitMethodBody(MethodBuilder methodBuilder, MethodInfo method)
+            {
+                var parameters = method.GetParameters();
+                var il = methodBuilder.GetILGenerator();
+                il.PushField(_instance);
+                for (int i = 1; i <= parameters.Length; i++)
                 {
-                    var il = methodBuilder.GetILGenerator();
-                    il.PushField(_instance);
-                    for (int i = 1; i <= parameters.Length; i++)
-                    {
-                        il.PushArg(i);
-                    }
-                    il.Emit(OpCodes.Callvirt, method);
-                    il.Ret();
+                    il.PushArg(i);
                 }
+                il.Emit(OpCodes.Callvirt, method);
+                il.Ret();
             }
 
             void DefineInterfaceProxyConstructor()
@@ -116,117 +147,26 @@ namespace DynamicIL
             }
         }
 
-        public Type CreateInterfaceProxyType<TInterface, TDynamicProxy>() where TDynamicProxy : DynamicProxy
+        void DefineGenericParameter(Type targetType, TypeBuilder typeBuilder)
         {
-            var interfaceType = typeof(TInterface);
-            var parentType = typeof(TDynamicProxy);
-            var objType = typeof(object);
-            var typeBuilder = _builder.DefineType($"{ASSEMBLY_NAME}.{interfaceType.Name}Proxy", TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed, parentType, new[] { interfaceType });
-            var proxyObj = typeBuilder.DefineField("_proxyObj", objType, FieldAttributes.Private | FieldAttributes.InitOnly);
-            var constructorBuilder = typeBuilder.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard | CallingConventions.HasThis, new[] { objType });
-            //创建构造函数
-            var ctorIL = constructorBuilder.GetILGenerator();
-            ctorIL.Emit(OpCodes.Ldarg_0);
-            ctorIL.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes));
-            ctorIL.Emit(OpCodes.Ldarg_0);
-            ctorIL.Emit(OpCodes.Ldarg_1);
-            ctorIL.Emit(OpCodes.Stfld, proxyObj);
-            ctorIL.Emit(OpCodes.Ret);
-            //创建代理方法
-            var methods = interfaceType.GetMethods();
-            foreach (var method in methods)
-            {
-                var parameterTypes = method.GetParameters().Select(o => o.ParameterType).ToArray();
-                var isVoid = method.ReturnType == typeof(void);
-                var methodBuilder = typeBuilder.DefineMethod(method.Name, MethodAttributes.Public | MethodAttributes.Final | MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Virtual, method.ReturnType, parameterTypes);
+            if (!targetType.GetTypeInfo().IsGenericTypeDefinition)
+                return;
 
-                //支持泛型
-                if(method.IsGenericMethod)
-                {
-                    var genericArgs = method.GetGenericArguments().Select(t => t.GetTypeInfo()).ToArray();
-                    var genericArgsBuilders = methodBuilder.DefineGenericParameters(genericArgs.Select(a => a.Name).ToArray());
-                    for (int i = 0; i < genericArgs.Length; i++)
-                    {
-                        genericArgsBuilders[i].SetGenericParameterAttributes(genericArgs[i].GenericParameterAttributes);
-                        foreach (var constraint in genericArgs[i].GetGenericParameterConstraints().Select(t => t.GetTypeInfo()))
-                        {
-                            if (constraint.IsClass)
-                                genericArgsBuilders[i].SetBaseTypeConstraint(constraint.AsType());
-                            if (constraint.IsInterface)
-                                genericArgsBuilders[i].SetInterfaceConstraints(constraint.AsType());
-                        }
-                    }   
-                }
-                var methodIL = methodBuilder.GetILGenerator();
-                var argsLocal = methodIL.DeclareLocal(typeof(object[]));
-                methodIL.NewArray(typeof(object), parameterTypes.Length);
-                for (int i = 0; i < parameterTypes.Length; i++)
-                {
-                    var parameterType = parameterTypes[i];
-                    methodIL.CopyStackTop();
-                    methodIL.PushInt(i);
-                    methodIL.PushArg(i + 1);
-                    methodIL.BoxIfNeed(parameterType);
-                    methodIL.Emit(OpCodes.Stelem_Ref);
-                }
-                methodIL.StoreLocal(argsLocal);
-                methodIL.PushThis();
-                methodIL.PushField(proxyObj);
-                methodIL.Emit(OpCodes.Ldtoken, method);
-                methodIL.Emit(OpCodes.Call, MethodInfos.GetMethodFromHandle);
-                methodIL.Emit(OpCodes.Castclass, typeof(MethodInfo));
-                methodIL.PushLocal(argsLocal);
-                methodIL.Emit(OpCodes.Callvirt, MethodInfos.DynamicProxyInvoke);
-                if (isVoid)
-                    methodIL.Pop();
-                else
-                    methodIL.UnBoxAny(method.ReturnType);
-                methodIL.Emit(OpCodes.Ret);
-            }
-            return typeBuilder.CreateType();
-        }
-
-        private class GenericParameterUtils
-        {
-            internal static void DefineGenericParameter(Type targetType, TypeBuilder typeBuilder)
+            var arguments = targetType.GetTypeInfo().GetGenericArguments().Select(t => t.GetTypeInfo()).ToArray();
+            var argumentsBuilders = typeBuilder.DefineGenericParameters(arguments.Select(a => a.Name).ToArray());
+            for (var index = 0; index < arguments.Length; index++)
             {
-                if (!targetType.GetTypeInfo().IsGenericTypeDefinition)
+                argumentsBuilders[index].SetGenericParameterAttributes(ToClassGenericParameterAttributes(arguments[index].GenericParameterAttributes));
+                foreach (var constraint in arguments[index].GetGenericParameterConstraints().Select(t => t.GetTypeInfo()))
                 {
-                    return;
-                }
-                var genericArguments = targetType.GetTypeInfo().GetGenericArguments().Select(t => t.GetTypeInfo()).ToArray();
-                var genericArgumentsBuilders = typeBuilder.DefineGenericParameters(genericArguments.Select(a => a.Name).ToArray());
-                for (var index = 0; index < genericArguments.Length; index++)
-                {
-                    genericArgumentsBuilders[index].SetGenericParameterAttributes(ToClassGenericParameterAttributes(genericArguments[index].GenericParameterAttributes));
-                    foreach (var constraint in genericArguments[index].GetGenericParameterConstraints().Select(t => t.GetTypeInfo()))
-                    {
-                        if (constraint.IsClass) genericArgumentsBuilders[index].SetBaseTypeConstraint(constraint.AsType());
-                        if (constraint.IsInterface) genericArgumentsBuilders[index].SetInterfaceConstraints(constraint.AsType());
-                    }
+                    if (constraint.IsClass) 
+                        argumentsBuilders[index].SetBaseTypeConstraint(constraint.AsType());
+                    if (constraint.IsInterface) 
+                        argumentsBuilders[index].SetInterfaceConstraints(constraint.AsType());
                 }
             }
 
-            internal static void DefineGenericParameter(MethodInfo tergetMethod, MethodBuilder methodBuilder)
-            {
-                if (!tergetMethod.IsGenericMethod)
-                {
-                    return;
-                }
-                var genericArguments = tergetMethod.GetGenericArguments().Select(t => t.GetTypeInfo()).ToArray();
-                var genericArgumentsBuilders = methodBuilder.DefineGenericParameters(genericArguments.Select(a => a.Name).ToArray());
-                for (var index = 0; index < genericArguments.Length; index++)
-                {
-                    genericArgumentsBuilders[index].SetGenericParameterAttributes(genericArguments[index].GenericParameterAttributes);
-                    foreach (var constraint in genericArguments[index].GetGenericParameterConstraints().Select(t => t.GetTypeInfo()))
-                    {
-                        if (constraint.IsClass) genericArgumentsBuilders[index].SetBaseTypeConstraint(constraint.AsType());
-                        if (constraint.IsInterface) genericArgumentsBuilders[index].SetInterfaceConstraints(constraint.AsType());
-                    }
-                }
-            }
-
-            private static GenericParameterAttributes ToClassGenericParameterAttributes(GenericParameterAttributes attributes)
+            GenericParameterAttributes ToClassGenericParameterAttributes(GenericParameterAttributes attributes)
             {
                 if (attributes == GenericParameterAttributes.None)
                 {
@@ -253,6 +193,26 @@ namespace DynamicIL
                     return GenericParameterAttributes.DefaultConstructorConstraint;
                 }
                 return GenericParameterAttributes.None;
+            }
+        }
+
+        void DefineGenericParameter(MethodInfo tergetMethod, MethodBuilder methodBuilder)
+        {
+            if (!tergetMethod.IsGenericMethod)
+                return;
+
+            var arguments = tergetMethod.GetGenericArguments().Select(t => t.GetTypeInfo()).ToArray();
+            var argumentsBuilders = methodBuilder.DefineGenericParameters(arguments.Select(a => a.Name).ToArray());
+            for (var index = 0; index < arguments.Length; index++)
+            {
+                argumentsBuilders[index].SetGenericParameterAttributes(arguments[index].GenericParameterAttributes);
+                foreach (var constraint in arguments[index].GetGenericParameterConstraints().Select(t => t.GetTypeInfo()))
+                {
+                    if (constraint.IsClass) 
+                        argumentsBuilders[index].SetBaseTypeConstraint(constraint.AsType());
+                    if (constraint.IsInterface) 
+                        argumentsBuilders[index].SetInterfaceConstraints(constraint.AsType());
+                }
             }
         }
     }
